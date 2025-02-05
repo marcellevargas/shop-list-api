@@ -1,7 +1,7 @@
 import os
 
-from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///todos.db'
@@ -46,7 +46,7 @@ def update_todo(id):
   db.session.commit()
   return jsonify(todo_to_dict(todo))
 
-@app.route("todos/<int:id>", methods=["DELETE"])
+@app.route("/todos/<int:id>", methods=["DELETE"])
 def delete_todo(id):
   todo = Todo.query.get_or_404(id)
   db.session.delete(todo)
