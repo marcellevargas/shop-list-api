@@ -1,65 +1,117 @@
-import os
-
-from flask_sqlalchemy import SQLAlchemy
 from flask import Flask, request, jsonify
+from ariadne import QueryType, MutationType, make_executable_schema, graphql_sync
+
+from models.models import db, Product
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///todos.db'
-db = SQLAlchemy(app)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///shoplist.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-class Todo(db.Model):
-  id = db.Column(db.Integer, primary_key=True)
-  title = db.Column(db.String(100), nullable=False)
-  done = db.Column(db.Boolean, default=False)
+db.init_app(app)  # Inicializar o SQLAlchemy com o Flask
 
-def todo_to_dict(todo):
-  return {
-    "id": todo.id,
-    "title": todo.title,
-    "done": todo.done
-  }
+# Definir o schema GraphQL
+type_defs = """
+    type Product {
+        id: ID!
+        title: String!
+        purchased: Boolean!
+    }
 
-@app.route("/todos", methods=["POST"])
-def create_todo():
-  data = request.json
-  new_todo = Todo(title=data["title"], done=data.get("done", False))
-  db.session.add(new_todo)
-  db.session.commit()
-  return jsonify(todo_to_dict(new_todo)), 201
+    type Query {
+        products: [Product!]!
+        product(id: ID!): Product
+    }
 
-@app.route("/todos", methods=["GET"])
-def get_todos():
-    todos = Todo.query.all()
-    return jsonify([todo_to_dict(todo) for todo in todos])
+    input ProductInput {
+        title: String!
+        purchased: Boolean
+    }
 
-@app.route("/todos/<int:id>", methods=["GET"])
-def get_todo(id):
-  todo = Todo.query.get_or_404(id)
-  return jsonify(todo_to_dict(todo))
+    type Mutation {
+        createProduct(input: ProductInput!): Product!
+        updateProduct(id: ID!, input: ProductInput!): Product!
+        deleteProduct(id: ID!): Boolean!
+    }
+"""
 
-@app.route("/todos/<int:id>", methods=["PUT"])
-def update_todo(id):
-  todo = Todo.query.get_or_404(id)
-  data = request.json
-  todo.title = data.get("title", todo.title)
-  todo.done = data.get("done", todo.done)
-  db.session.commit()
-  return jsonify(todo_to_dict(todo))
+# Queries
+query = QueryType()
 
-@app.route("/todos/<int:id>", methods=["DELETE"])
-def delete_todo(id):
-  todo = Todo.query.get_or_404(id)
-  db.session.delete(todo)
-  db.session.commit()
-  return "", 404
+@query.field("products")
+def resolve_products(*_):
+    return Product.query.all()
 
-@app.route("/")
-def hello_world():
-  """Example Hello World route."""
-  name = os.environ.get("NAME", "World")
-  return f"Hello {name}!"
+@query.field("product")
+def resolve_product(_, info, id):
+    return Product.query.get(id)
 
+# Mutations
+mutation = MutationType()
+
+@mutation.field("createProduct")
+def resolve_create_product(_, info, input):
+    new_product = Product(title=input["title"], purchased=input.get("purchased", False))
+    db.session.add(new_product)
+    db.session.commit()
+    return new_product
+
+@mutation.field("updateProduct")
+def resolve_update_product(_, info, id, input):
+    product = Product.query.get(id)
+    if not product:
+        raise Exception("Product not found")
+    product.title = input.get("title", product.title)
+    product.purchased = input.get("purchased", product.purchased)
+    db.session.commit()
+    return product
+
+@mutation.field("deleteProduct")
+def resolve_delete_product(_, info, id):
+    product = Product.query.get(id)
+    if not product:
+        raise Exception("Product not found")
+    db.session.delete(product)
+    db.session.commit()
+    return True
+
+# Criar o schema executável
+schema = make_executable_schema(type_defs, query, mutation)
+
+# Endpoint GraphQL Playground
+@app.route("/graphql", methods=["GET"])
+def graphql_playground():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8" />
+        <title>GraphQL Playground</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/graphql-playground/1.7.33/static/css/index.css" />
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/graphql-playground/1.7.33/static/js/middleware.js"></script>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script>
+            window.addEventListener("load", function () {
+                GraphQLPlayground.init(document.getElementById("root"), {
+                    endpoint: "/graphql"
+                })
+            })
+        </script>
+    </body>
+    </html>
+    """, 200
+
+# Endpoint GraphQL para POST requests
+@app.route("/graphql", methods=["POST"])
+def graphql_server():
+    data = request.get_json()
+    success, result = graphql_sync(schema, data, context_value=request, debug=True)
+    status_code = 200 if success else 400
+    return jsonify(result), status_code
+
+# Criar o banco de dados se não existir
 if __name__ == "__main__":
-  with app.app_context():
-    db.create_all()
-  app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
+    with app.app_context():
+        db.create_all()  # Criar tabelas no banco de dados
+    app.run(debug=True)
